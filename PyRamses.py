@@ -1,4 +1,8 @@
 #%%
+Author: Hongbo Liu
+Email: hbliu104@gmail.com
+
+#%%
 import serial
 import serial.tools.list_ports as serialist
 
