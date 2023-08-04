@@ -487,7 +487,7 @@ if __name__ == "__main__":
             ramses_dev = {}
             for idx in range(len(ramses_dev_list)):
                 _, ips_chn, sn = ramses_dev_list[idx]
-                ramses_dev[f'dev_{idx}'] = RAMSES(sn=sn)
+                ramses_dev[f'dev_{idx}'] = RAMSES(config_path='./Ramses Calibration_2017/', sn=sn)
                 ramses_dev[f'dev_{idx}'].attach(ser=ser, ips_chn=ips_chn, sn=sn)
 
             q_listen = threading.Thread(target=q_rx, args=(ser, rx_q, ramses_dev))
