@@ -1,6 +1,6 @@
 #%%
-Author: Hongbo Liu
-Email: hbliu104@gmail.com
+# Author: Hongbo Liu
+# Email: hbliu104@gmail.com
 
 #%%
 import serial
@@ -340,10 +340,10 @@ class RAMSES:
         plt.grid()
         plt.ylim(bottom=0)
         plt.xlabel('Wavelength (nm)')
-        if self.sam_type.startswith('ACC'):
-            plt.ylabel(r'Irradiance (mW$\cdot$m$^{-2}\cdot$nm$^{-1}$)')
-        else:
+        if self.sam_type.startswith('ARC'):
             plt.ylabel(r'Radiance (mW$\cdot$m$^{-2}\cdot$sr$^{-1}\cdot$nm$^{-1}$)')
+        else:
+            plt.ylabel(r'Irradiance (mW$\cdot$m$^{-2}\cdot$nm$^{-1}$)')
         
         if hasattr(self, 'inclination'):
             plt.text(0.6, 0.6, f'Incl. = {self.inclination:.2f}' + r'$^{\circ}$' + f'\nPressure: {self.p_bar:.2f} bar\nWater depth: {self.d_water:.2f} m', transform=plt.gca().transAxes)
@@ -400,12 +400,12 @@ class RAMSES:
         # calibrated
         dev_info['IDDataTypeSub1'] = 'CALIBRATED'
         dev_attr['Unit1'] = '$01 $01 Wavelength nm'
-        if self.sam_type.startswith('ACC'):
-            dev_attr['Unit2'] = '$03 $06 Intensity mW/(m^2 nm)'
-            dev_attr['Unit3'] = '$f0 $06 Error mW/(m^2 nm)'
-        else:
+        if self.sam_type.startswith('ARC'):
             dev_attr['Unit2'] = '$03 $03 Intensity mW/(m^2 nm Sr)'
             dev_attr['Unit3'] = '$f0 $03 Error mW/(m^2 nm Sr)'
+        else:
+            dev_attr['Unit2'] = '$03 $06 Intensity mW/(m^2 nm)'
+            dev_attr['Unit3'] = '$f0 $06 Error mW/(m^2 nm)'
         
         with open(dat_path, 'a') as fout:
             _ = fout.write('[Spectrum]\n')
