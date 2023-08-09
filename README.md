@@ -12,6 +12,8 @@ Python module to communicate with [TriOS RAMSES](https://www.trios.de/en/ramses.
 
 ## Dependency
 - Python packages: [Numpy](https://numpy.org/), [Matplotlib](https://matplotlib.org/), [PySerial](https://pyserial.readthedocs.io/en/latest/index.html)
+- Device configuration file: SAM_xxxx.ini
+- Manufacturer calibration files: Back_SAM_xxxx.dat, Cal_SAM_xxxx.dat, CalAQ_SAM_xxxx.dat
 
 ## Reference
 - TriOS Data protocol in "D01-016en202204: TriOS RAMSES Operating Instructions", TriOS GmbH
