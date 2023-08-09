@@ -1,7 +1,7 @@
 # PyRamses
 ![Static Badge](https://img.shields.io/badge/TriOS-RAMSES-blue)
-![Static Badge](https://img.shields.io/badge/None_official-orange)
-![Static Badge](https://img.shields.io/badge/No_warranty-green)
+![Static Badge](https://img.shields.io/badge/NONE_OFFICIAL-orange)
+![Static Badge](https://img.shields.io/badge/NO_WARRANTY-green)
 
 Python module to communicate with [TriOS RAMSES](https://www.trios.de/en/ramses.html) radiometers via serial port
 
