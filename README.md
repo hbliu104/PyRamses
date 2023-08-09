@@ -7,10 +7,7 @@ Python module to communicate with [TriOS RAMSES](https://www.trios.de/en/ramses.
 - Tested on Windows 10 with [Python 3.10.11](https://www.python.org/downloads/release/python-31011/) (64bit)
 
 ## Dependency
-- Python packages
-  - [Numpy](https://numpy.org/)
-  - [Matplotlib](https://matplotlib.org/)
-  - [PySerial](https://pyserial.readthedocs.io/en/latest/index.html)
+- Python packages: [Numpy](https://numpy.org/), [Matplotlib](https://matplotlib.org/), [PySerial](https://pyserial.readthedocs.io/en/latest/index.html)
 
 ## Reference
 - TriOS Data protocol in "D01-016en202204: TriOS RAMSES Operating Instructions", TriOS GmbH
