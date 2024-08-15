@@ -7,7 +7,6 @@ import serial
 import serial.tools.list_ports as serialist
 
 import numpy as np
-
 import matplotlib
 import matplotlib.pyplot as plt
 plt.rcParams['font.family'] = 'Times New Roman'
@@ -18,63 +17,175 @@ plt.rcParams['pdf.fonttype'] = 42
 color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
 import time
-
 import glob
-
 import threading
-
+import websockets
+import asyncio
 import queue
-
 import logging
+import csv
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import socket
+# ipv6_addr = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET6)[0][4][0]
 
 #%%
 vals = [2, 4, 8, 9, 10, 12, 16, 20, 24]
 types = ['MicroFlu', 'IOM', 'COM', 'IPS', 'SAMIP', 'SCM', 'SAM', 'DFM', 'ADM']
 
-def ramses_parse(filePath, device='SAM_80e2', datatype='CALIBRATED', timestamp=False):
+class ws_server:
+    def __init__(self) -> None:
+        pass
+
+    async def handler(self, ws):
+        self.ws = ws
+        async for _ in self.ws: pass
+
+    async def send(self, msg):
+        if not hasattr(self, 'ws'):
+            return
+        
+        try:
+            await self.ws.send(msg)
+        except websockets.ConnectionClosedOK:
+            print('No active client.')
+
+    async def server(self):
+        self.stop = asyncio.get_running_loop().create_future()
+        async with websockets.serve(self.handler, host=None, port=5007):
+            await self.stop  # run until stop
+
+    def run(self):
+        print(f'Thread {threading.get_ident()} start as websocket server.')
+        asyncio.run(self.server())
+        print(f'Thread {threading.get_ident()} stop as websocket server.')
+
+    def shutdown(self):
+        self.stop.set_result(True)
+        asyncio.run(self.send(''))
+
+
+class http_handler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def do_GET(self):
+        # Cache request
+        path = self.path
+
+        # Validate request path, and set type
+        if path == "/index.html":
+            type = "text/html"
+        elif path == "/data.js":
+            type = "text/javascript"
+        elif path == "/latest.dat":
+            type = "text/plain"
+        elif path == "/favicon.ico":
+            path = "/index.html"
+            type = "text/html"
+        else:
+            # Wild-card/default
+            if not path == "/":
+                # print("UNRECONGIZED REQUEST: ", path)
+                pass
+
+            path = "/index.html"
+            type = "text/html"
+        
+        # Set header with content type
+        self.send_response(200)
+        self.send_header("Content-type", type)
+        self.end_headers()
+        
+        # Open the file, read bytes, serve
+        with open(path[1:], 'rb') as file: 
+            self.wfile.write(file.read()) # Send
+
+
+class http_server():
+    def __init__(self) -> None:
+        self.port = 3000
+        self.ipv4_addr = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)[0][4][0]
+        self.server = HTTPServer(('', self.port), http_handler)
+
+    def run(self):
+        print(f'Thread {threading.get_ident()} start as http server at {self.ipv4_addr}:{self.port}.')
+        try:
+            self.server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        self.server.server_close()
+        print(f'Thread {threading.get_ident()} stop as http server.')
+
+
+def ramses_parse(filePath, device=None, datatype='CALIBRATED', timestamp=False, ip=False):
     n_test = 0
     flag_ = 0
+
+    dev_list = {}
+    if device is None:
+        with open(filePath, 'r') as fin:
+            for line in fin:
+                if line.startswith('IDDevice'):
+                    dev_sn = line.split('=')[-1].strip()
+                    if dev_sn not in dev_list:
+                        dev_list[dev_sn] = {}
+                elif line.startswith('IDDataTypeSub1'):
+                    data_type = line.split('=')[-1].strip()
+                    if data_type in dev_list[dev_sn]:
+                        dev_list[dev_sn][data_type] += 1
+                    else:
+                        dev_list[dev_sn][data_type] = 1
+        return dev_list
+
     with open(filePath, 'r') as fin:
         for line in fin:
-            if line.startswith('IDDevice') and line.split('=')[-1].strip().upper() == device.upper():
-                flag_ = 1
-            if line.startswith('IDDataTypeSub1') and line.split('=')[-1].strip() == datatype:
-                if flag_:
+            if line.startswith('IDDevice'):
+                flag_ = line.split('=')[-1].strip().upper() == device.upper()
+            elif line.startswith('IDDataTypeSub1'):
+                if line.split('=')[-1].strip() == datatype and flag_:
                     n_test += 1
                 flag_ = 0
 
-    logging.debug(f'{filePath} {n_test} matched records.')
     if not n_test:
-        return 0, 0
+        print('No matched data.')
+        return 0
 
     raw = np.zeros((256, n_test+1))
     time_stamp = []
+    inclination = np.zeros(n_test)
+    pressure = np.zeros(n_test)
 
     n = 1
     with open(filePath, 'r') as fin:
         for line in fin:
-            if line.startswith('IDDevice') and line.split('=')[-1].strip().upper() == device.upper():
-                flag_ = 1
-            elif line.startswith('IDDataTypeSub1') and line.split('=')[-1].strip() == datatype:
-                flag_ = flag_ << 1 if flag_ & 1 else 0
+            if line.startswith('IDDevice'):
+                flag_ = line.split('=')[-1].strip().upper() == device.upper()
 
-            elif line.startswith('DateTime') and timestamp:
-                if flag_ & 2:
-                    time_stamp.append(line.split('=')[-1].strip())
+            elif line.startswith('IDDataTypeSub1'):
+                flag_ &= line.split('=')[-1].strip() == datatype
 
-            elif line.startswith('[DATA]'):
-                if flag_ & 2:
-                    idx = 0
-                    flag_ <<= 1
-                else:
-                    flag_ = 0
+            elif line.startswith('DateTime') and timestamp and flag_:
+                time_stamp.append(line.split('=')[-1].strip())
+
+            elif line.startswith('InclV ') and ip and flag_:
+                inclination[n-1] = float(line.split('=')[-1].strip())
+
+            elif line.startswith('Pressure') and ip and flag_:
+                pressure[n-1] = float(line.split('=')[-1].strip())
+
+            elif line.startswith('[DATA]') and flag_:
+                idx = 0
+                flag_ <<= 1
+
             elif line.startswith('[END] of [DATA]'):
-                if flag_ >> 2:
+                if flag_ >> 1:
                     n += 1
                 flag_ = 0
 
             else:
-                if flag_ >> 2:
+                if flag_ >> 1:
                     ss = line.lstrip().split(' ')
                     
                     if datatype == 'BACK':
@@ -85,10 +196,15 @@ def ramses_parse(filePath, device='SAM_80e2', datatype='CALIBRATED', timestamp=F
                         raw[idx, n] = float(ss[1])
                     idx += 1
 
+    res = (raw[:, 0], raw[:, -1:0:-1])
+    
     if timestamp:
-        return raw[:, 0], raw[:, -1:0:-1], time_stamp
+        res += (time_stamp[::-1],)
 
-    return raw[:, 0], raw[:, -1:0:-1]
+    if ip:
+        res += (inclination[::-1], pressure[::-1],)
+    
+    return res
 
 
 def bin_replace(bs):
@@ -113,13 +229,13 @@ def serial_rx(ser, q):
     logging.debug(f'Thread {threading.get_ident()} stop.')
 
 
-def q_rx(ser, rx_q, devs):
+def q_rx(ser, rx_q, devs, plot=False, html=True):
     logging.debug(f'Thread {threading.get_ident()} start.')
     while ser.is_open:
         while rx_q.qsize():
             bs = rx_q.get()
             for dev in devs.values():
-                dev.rx_parse(bs, plot=True)
+                dev.rx_parse(bs, plot=False, html=True)
         time.sleep(1)
     logging.debug(f'Thread {threading.get_ident()} stop.')
 
@@ -188,8 +304,10 @@ class RAMSES:
             self.sn = sn
             self.config_parse()
 
+        self.measuring = threading.Event()
+
     def __repr__(self) -> str:
-        pass
+        return self.sn
 
     def config_parse(self):
         config_ini = glob.glob(RAMSES.config_path + self.sn + '/*.ini')[0]
@@ -239,9 +357,11 @@ class RAMSES:
                 
                 self.dev_type = 'SAMIP'
 
-    def attach(self, ser, ips_chn, sn):
+    def attach(self, ser, ips_chn, sn, interval_s=0, n_total=1):
         self.ser = ser
         self.ips_chn = ips_chn
+        self.interval_s = interval_s
+        self.n_total = n_total
         if hasattr(self, 'sn'):
             if self.sn != sn:
                 print('Device does not match.')
@@ -267,14 +387,15 @@ class RAMSES:
         self.ser.write(bytes.fromhex(ss))
         logging.info(f'[{self.sn}] Tx: ' + ss.replace(' ', ''))
         self.t_trigger = time.strftime('%Y%m%d_%H%M%S')
+        self.measuring.set()
 
-    def rx_parse(self, bs, plot=False):
+    def rx_parse(self, bs, corr=False, plot=False, html=False):
         bs_seg = [b'#' + x for x in bs.split(b'#')][1:]
         raw = []
         for bs in bs_seg:
             bs = bin_replace(bs)
             # n_byte = 2 ** ((bs[1] >> 5) + 1)
-            # print(f'n_byte: {n_byte}')
+            # print(f'n_byte: {n_byte}')            
             if bs[1] & 0b1111 != int(self.ips_chn): # dev_id
                 continue
 
@@ -319,20 +440,40 @@ class RAMSES:
                 print(f'Device type {bs[3]} is not SAM or IP.')
 
         if len(raw) == 256:
+            self.measuring.clear()
+
             raw[0] = t_hex
             self.t = 2 * 2 ** t_hex
             self.raw = raw
 
             dst_ = np.array(raw, dtype=float).reshape((-1, 1)) / 65535 - (self.bkg1.reshape((-1, 1)) + self.t/self.t0 * self.bkg2)
-            noise = np.mean(dst_[self.DarkPixelStart:self.DarkPixelStop+1])
+            if corr:
+                noise = np.maximum(0, dst_[self.DarkPixelStart:self.DarkPixelStop+1].mean())
+            else:
+                noise = dst_[self.DarkPixelStart:self.DarkPixelStop+1].mean()
             self.cali = (dst_ - noise) * self.t0 / self.t / self.air
             self.cali[0] = t_hex
 
+            if not self.ser is None:
+                logging.info(f'[{self.sn}] READY')
+
             if plot:
                 self.fig_plot()
+
+            if html:
+                self.html_preview()
+                self.dat_formatter()
+
         else:
             if len(raw):
                 print('Incomplete data.')
+
+    def html_preview(self):
+        self.msg = json.dumps({"dev":self.sn,
+                               "sam_type":self.sam_type,
+                               "t_trigger":self.t_trigger,
+                               "t_exp":self.t,
+                               "data":{'x': self.wl.tolist(), 'y': self.cali[1:].flatten().tolist(), 'name': self.sn, 'type': 'scatter'}}).replace('NaN', 'null')
 
     def fig_plot(self):
         plt.figure()
@@ -364,16 +505,20 @@ class RAMSES:
 
         print(f'./img_{self.sn}.png saved.')
 
-    def dat_formatter(self, dat_path='./test.dat'):
+
+    def dat_formatter(self, dat_path='./latest.dat'):
         dev_info = {'Version':'1', 'IDData':'', 'IDDevice':self.id_dev, 'IDDataType':'SPECTRUM', 'IDDataTypeSub1':'', 'IDDataTypeSub2':'', 'IDDataTypeSub3':'', 'DateTime':time.strftime('%Y-%m-%d %H:%M:%S', time.strptime(self.t_trigger, '%Y%m%d_%H%M%S')), 'PositionLatitude':'0', 'PositionLongitude':'0', 'Comment':'', 'CommentSub1':'', 'CommentSub2':'', 'CommentSub3':'', 'IDMethodType':f'{self.dev_type} Control', 'MethodName':f'{self.dev_type}_{self.sn}', 'Mission':'No Mission', 'MissionSub':'1', 'RecordType':'0'}
 
         dev_attr = {'CalFactor':'1', 'IDBasisSpec':'', 'IDDataBack':'', 'IDDataCal':'', 'IntegrationTime':self.t, 'P31':'-1', 'P31e':'0', 'PathLength':'+INF', 'PathLengthCustomOn':'0', 'RAWDynamic':'65535', 'Salinity':'0', 'Temperature':'-NAN', 'Unit1':'', 'Unit2':'', 'Unit3':'', 'Unit4':'$f1 $00 Status', 'p999':'1'}
 
         if self.dev_type == 'SAMIP':
-            dev_attr['PressValid'] = 1
-            dev_attr['Pressure'] = self.p_bar
-            dev_attr['InclValid'] = 1
-            dev_attr['InclV'] = self.inclination
+            try:
+                dev_attr['PressValid'] = 1
+                dev_attr['Pressure'] = self.p_bar
+                dev_attr['InclValid'] = 1
+                dev_attr['InclV'] = self.inclination
+            except AttributeError:
+                pass
 
         # raw
         dev_info['IDDataTypeSub1'] = 'RAW'
@@ -425,17 +570,19 @@ class RAMSES:
             _ = fout.write('[END] of Spectrum\n\n')
 
 
-def log2dat(log_path, dat_path=None):
+def log2dat(log_path, dat_path=None, corr=True):
     if dat_path is None:
-        dat_path = log_path.split('.txt')[0] + '.dat'
+        dat_path = log_path.split('.log')[0] + '.dat'
+
+    with open(dat_path, 'w') as _:
+        pass
     
     ips_chn_list = []
     sn_list = []
     with open(log_path, 'r') as fin:
         for line in fin:
-            idx_l = line.find('[')
-            if idx_l > 0:
-                sn_list.append(line[idx_l+1:idx_l+5])
+            if line.find('Tx') > 0:
+                sn_list.append(line.split('[')[-1][:4])
                 ips_chn_list.append(line.split('Tx: ')[-1][2:4])
     ramses_dev_list = list(set(zip(ips_chn_list, sn_list)))
 
@@ -443,35 +590,102 @@ def log2dat(log_path, dat_path=None):
     dev_flag = {}
     for idx in range(len(ramses_dev_list)):
         ips_chn, sn = ramses_dev_list[idx]
-        ramses_dev[f'{sn}'] = RAMSES(sn=sn)
-        ramses_dev[f'{sn}'].attach(ser=None, ips_chn=ips_chn, sn=sn)
-        dev_flag[f'{sn}'] = False
+        ramses_dev[sn] = RAMSES(sn=sn)
+        ramses_dev[sn].attach(ser=None, ips_chn=ips_chn, sn=sn)
+        dev_flag[sn] = False
     
 
     with open(log_path, 'r') as fin:
         for line in fin:
-            if line.find('NEW') > 0 or line.find('END') > 0:
+            if line.find('READY') > 0:
                 for sn, dev in ramses_dev.items():
-                    if dev_flag[f'{sn}']:
+                    if sn == line.split('[')[-1].split(']')[0] and dev_flag[sn]:
                         dev.dat_formatter(dat_path=dat_path)
-                        dev_flag[f'{sn}'] = False
+                        dev_flag[sn] = False
             elif line.find('Tx') > 0:
                 for sn, dev in ramses_dev.items():
-                    dev_flag[f'{sn}'] = True
-                    dev.t_trigger = line.split(' ')[0]
+                    if sn == line.split('[')[-1].split(']')[0]:
+                        dev_flag[sn] = True
+                        dev.t_trigger = line.split(' ')[0]
             else:
                 bs = bytes.fromhex(line.split('Rx: ')[-1].strip())
                 for sn, dev in ramses_dev.items():
-                    if dev_flag[f'{sn}']:
-                        dev.rx_parse(bs)
+                    if dev_flag[sn]:
+                        dev.rx_parse(bs, corr=corr)
     
     return [x.id_dev for x in ramses_dev.values()]
+
+
+def dat2csv(dat_path, datatype='CALIBRATED'):
+    dev_list = ramses_parse(dat_path)
+
+    for dev_id in dev_list.keys():
+        wl, val, ts = ramses_parse(dat_path, dev_id, datatype=datatype, timestamp=True)
+
+        csv_path = dat_path.split('.dat')[0] + f'_{dev_id}_.csv'
+        with open(csv_path, 'w', newline='') as fout:
+            csv_writer = csv.writer(fout)
+
+            csv_writer.writerow(wl)
+            csv_writer.writerows(np.hstack((np.array(ts).reshape((-1, 1)), val[1:].T)))
+
+def raw2cal(dat_path, cal_coeff, corr=False, plot=False):
+    for dev_id in ramses_parse(dat_path).keys():
+        sn = dev_id.split('_')[-1]
+        dev = RAMSES(sn=sn)
+        wl_idx, raw, ts = ramses_parse(dat_path, dev_id, datatype='RAW', timestamp=True)
+
+        dev.t = 2 * 2**raw[0]
+
+        dst_ = raw / 65535 - (dev.bkg1.reshape((-1, 1)) + dev.t/dev.t0 * dev.bkg2)
+        if corr:
+            noise = np.maximum(0, dst_[dev.DarkPixelStart:dev.DarkPixelStop+1].mean())
+        else:
+            noise = dst_[dev.DarkPixelStart:dev.DarkPixelStop+1].mean()
+
+        if cal_coeff == 'air':
+            dev.cali = (dst_ - noise) * dev.t0 / dev.t / dev.air
+        elif cal_coeff == 'water':
+            dev.cali = (dst_ - noise) * dev.t0 / dev.t / dev.aqra
+        dev.cali[0] = raw[0]
+
+        csv_path = dat_path.split('.dat')[0] + f'_{dev_id}_calibrated.csv'
+        with open(csv_path, 'w', newline='') as fout:
+            csv_writer = csv.writer(fout)
+
+            csv_writer.writerow(np.hstack((0, dev.wl)))
+            csv_writer.writerows(np.hstack((np.array(ts).reshape((-1, 1)), dev.cali[1:].T)))
+
+        if plot:
+            # RAW
+            plt.figure()
+            _ = plt.semilogy(wl_idx[1:], raw[1:, 0])
+            plt.title('RAW')
+            plt.grid(True)
+            plt.xlim(1, 256)
+
+            # CAL
+            plt.figure()
+            wl, val = ramses_parse(dat_path, dev_id, datatype='CALIBRATED', timestamp=False)
+            plt.semilogy(dev.wl, dev.cali[1:, 0], label='manual')
+            plt.semilogy(wl[1:], val[1:, 0], label='auto')
+            plt.title('CALIBRATED')
+            plt.legend()
+            plt.grid(True)
+            plt.show()
+
+
+def json_parse(json_path='./schedule.json'):
+    with open(json_path, 'r') as fin:
+        schedule = json.load(fin)
+    
+    return [list(x.values()) for x in schedule['Devices']]
 
 
 #%%
 if __name__ == "__main__":
     matplotlib.use('agg')
-    log_path = time.strftime('./log_%Y%m%d_%H%M%S.txt')
+    log_path = time.strftime('./ramses_%Y%m%d_%H%M%S.log')
     logging.basicConfig(filename=log_path, filemode='w', format='%(asctime)s %(message)s', datefmt='%Y%m%d_%H%M%S', level=logging.INFO)
 
     ramses_dev_list = ramses_dev_scan()
@@ -507,16 +721,20 @@ if __name__ == "__main__":
             print(time.strftime('%Y%m%d_%H%M%S Finished.'))
 
     ramses_id_dev_list = log2dat(log_path)
-    dat_path = log_path.split('.txt')[0] + '.dat'
-    
-    matplotlib.use('TkAgg')
-    for id_dev in ramses_id_dev_list:
-        wl, res = ramses_parse(dat_path, id_dev)
+
+    if len(ramses_id_dev_list):
+        dat_path = log_path.split('.log')[0] + '.dat'
+
+        dat2csv(dat_path)
         
-        plt.figure()
-        plt.plot(wl[1:], res[1:, :])
-        plt.grid()
-        plt.ylim(bottom=0)
-        plt.xlabel('Wavelength (nm)')
-        plt.title(id_dev)
-    plt.show()
+        matplotlib.use('TkAgg')
+        for id_dev in ramses_id_dev_list:
+            wl, res = ramses_parse(dat_path, id_dev)
+            
+            plt.figure()
+            plt.plot(wl[1:], res[1:, :])
+            plt.grid()
+            plt.ylim(bottom=0)
+            plt.xlabel('Wavelength (nm)')
+            plt.title(id_dev)
+        plt.show()
